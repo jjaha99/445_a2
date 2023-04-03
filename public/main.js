@@ -1,11 +1,13 @@
-const videoElement = document.getElementById('camera-preview');
-const startUploadButton = document.getElementById('start-upload');
-
 let videoEncoder;
 let frameNumber = 0;
 let isUploading = false;
+const videoElement = document.getElementById('camera-preview');
+const startUploadButton = document.getElementById('start-upload');
+const videoListElement = document.getElementById('video-list');
 
 async function startCamera() {
+  console.log('Attempting to start the camera...');
+
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 }, audio: false });
     videoElement.srcObject = stream;
@@ -45,24 +47,75 @@ async function initVideoEncoder() {
   startEncoding();
 }
 
-async function startEncoding() {
+function startEncoding() {
   if (!videoEncoder) {
     console.error('Video encoder not initialized');
     return;
   }
 
-  while (true) {
-    const videoFrame = await createVideoFrame(videoElement);
-    videoEncoder.encode(videoFrame);
-    videoFrame.close();
+  requestAnimationFrame(encodeFrame);
+}
+
+async function encodeFrame() {
+  const videoFrame = await createVideoFrame(videoElement);
+  videoEncoder.encode(videoFrame);
+  videoFrame.close();
+
+  if (isUploading) {
+    requestAnimationFrame(encodeFrame);
   }
 }
 
+startUploadButton.addEventListener('click', async () => {
+    if (!isUploading) {
+      if (!videoElement.srcObject) {
+        await startCamera();
+      }
+    
+      await initVideoEncoder(); // Initialize the video encoder before starting the upload
+      startEncoding();
+    } else {
+      videoEncoder.flush();
+      getVideoListAndUpdate(); // Update the video list after stopping the upload
+    }
+    
+    isUploading = !isUploading;
+    startUploadButton.textContent = isUploading ? 'Stop Upload' : 'Start Upload';
+  });
+  
+
 async function createVideoFrame(videoElement) {
-  const bitmap = await createImageBitmap(videoElement);
-  const frame = new VideoFrame(bitmap, { timestamp: performance.now() });
-  return frame;
-}
+    const track = videoElement.captureStream().getVideoTracks()[0];
+    if (!track || !track.readyState === 'live') {
+      console.error('Video track is not ready');
+      return null;
+    }
+  
+    const bitmap = await createImageBitmap(track);
+    const frame = new VideoFrame(bitmap, { timestamp: performance.now() });
+    return frame;
+  }
+  
+  async function encodeFrame() {
+    if (!videoElement.srcObject || !videoElement.srcObject.active) {
+      console.warn('Video stream ended or not available');
+      return;
+    }
+    
+    try {
+      const videoFrame = await createVideoFrame(videoElement);
+      videoEncoder.encode(videoFrame);
+      videoFrame.close();
+    
+      if (isUploading) {
+        requestAnimationFrame(encodeFrame);
+      }
+    } catch (error) {
+      console.error('Error encoding video frame:', error);
+    }
+  }
+  
+  
 
 async function uploadVideoChunk(chunk, sequenceNumber) {
   const formData = new FormData();
@@ -82,9 +135,40 @@ async function uploadVideoChunk(chunk, sequenceNumber) {
   }
 }
 
-startUploadButton.addEventListener('click', () => {
-  isUploading = !isUploading;
-  startUploadButton.textContent = isUploading ? 'Stop Upload' : 'Start Upload';
-});
+async function loadVideoList() {
+  try {
+    const response = await fetch('/videos');
+    const videoList = await response.json();
+    displayVideoList(videoList);
+  } catch (error) {
+    console.error('Error loading video list:', error);
+  }
+}
 
-startCamera();
+async function getVideoListAndUpdate() {
+  try {
+    const response = await fetch('/videos');
+    const videoList = await response.json();
+    displayVideoList(videoList);
+  } catch (error) {
+    console.error('Error loading video list:', error);
+  }
+}
+
+function displayVideoList(videoList) {
+    videoListElement.innerHTML = '';
+  
+    for (const video of videoList) {
+      const listItem = document.createElement('li');
+      const videoLink = document.createElement('a');
+      videoLink.href = `/uploads/${video.filename}`;
+      videoLink.textContent = video.filename;
+      videoLink.target = '_blank';
+      listItem.appendChild(videoLink);
+      videoListElement.appendChild(listItem);
+    }
+  }
+  
+  // Load the video list when the page is loaded
+  loadVideoList();
+  
